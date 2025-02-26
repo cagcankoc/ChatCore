@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using ChatCore.WebApi.Interfaces.Services;
+using Prometheus;
 
 namespace ChatCore.WebApi.Controllers
 {
@@ -35,6 +36,18 @@ namespace ChatCore.WebApi.Controllers
             _cacheService = cacheService;
         }
 
+        // Metrics
+        private static readonly Histogram MessageLatency = Metrics
+            .CreateHistogram("chatcore_message_processing_duration_seconds", "Histogram of message processing latency");
+        private static readonly Histogram ChatLatency = Metrics
+            .CreateHistogram("chatcore_chat_processing_duration_seconds", "Histogram of chat processing latency");
+        private static readonly Counter TotalMessages = Metrics
+            .CreateCounter("chatcore_messages_total", "Total number of messages sent", 
+                new CounterConfiguration
+                {
+                    LabelNames = new[] { "chat_type" }
+                });
+
         [HttpGet("UserChats")]
         public async Task<ActionResult<IEnumerable<Chat>>> GetUserChats()
         {
@@ -53,38 +66,41 @@ namespace ChatCore.WebApi.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<Chat>> GetChat(Guid id)
         {
-            var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                ?? throw new UnauthorizedAccessException("User ID not found in token"));
-
-            // Check cache
-            var cacheKey = $"chat:{id}";
-            var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
-
-            if (cachedChat != null)
+            using (ChatLatency.NewTimer())
             {
-                if (!cachedChat.Users.Any(u => u.Id == userId))
+                var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? throw new UnauthorizedAccessException("User ID not found in token"));
+
+                // Check cache
+                var cacheKey = $"chat:{id}";
+                var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
+
+                if (cachedChat != null)
+                {
+                    if (!cachedChat.Users.Any(u => u.Id == userId))
+                        return Unauthorized(new { Message = "You are not a member of this chat" });
+
+                    return Ok(cachedChat);
+                }
+
+                // If not in cache, get from database
+                var chat = await _context.Chats
+                    .Include(c => c.Users)
+                    .Include(c => c.Messages)
+                    .FirstOrDefaultAsync(c => c.Id == id);
+
+                if (chat == null)
+                    return NotFound();
+                else if (!chat.Users.Any(u => u.Id == userId))
                     return Unauthorized(new { Message = "You are not a member of this chat" });
 
-                return Ok(cachedChat);
+                var chatDto = _mapper.Map<GetChatDto>(chat);
+
+                // Save to cache (1 hour)
+                await _cacheService.SetAsync(cacheKey, chatDto, TimeSpan.FromHours(1));
+
+                return Ok(chatDto);
             }
-
-            // If not in cache, get from database
-            var chat = await _context.Chats
-                .Include(c => c.Users)
-                .Include(c => c.Messages)
-                .FirstOrDefaultAsync(c => c.Id == id);
-
-            if (chat == null)
-                return NotFound();
-            else if (!chat.Users.Any(u => u.Id == userId))
-                return Unauthorized(new { Message = "You are not a member of this chat" });
-
-            var chatDto = _mapper.Map<GetChatDto>(chat);
-
-            // Save to cache (1 hour)
-            await _cacheService.SetAsync(cacheKey, chatDto, TimeSpan.FromHours(1));
-
-            return Ok(chatDto);
         }
 
         [HttpPost]
@@ -142,46 +158,52 @@ namespace ChatCore.WebApi.Controllers
         [HttpPost("messages")]
         public async Task<ActionResult<Message>> SendMessage(SendMessageDto sendMessageDto)
         {
-            var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                ?? throw new UnauthorizedAccessException("User ID not found in token"));
-
-            var chat = await _context.Chats
-                .Include(c => c.Users)
-                .FirstOrDefaultAsync(c => c.Id == sendMessageDto.ChatId);
-
-            if (chat == null)
-                return NotFound(new { Message = "Chat not found" });
-
-            if (!chat.Users.Any(u => u.Id == userId))
-                return BadRequest(new { Message = "Sender is not in this chat" });
-
-            var message = new Message
+            using (MessageLatency.NewTimer())
             {
-                ChatId = sendMessageDto.ChatId,
-                SenderId = userId,
-                Content = sendMessageDto.Content,
-                SentAt = DateTime.UtcNow
-            };
+                var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? throw new UnauthorizedAccessException("User ID not found in token"));
 
-            await _context.Messages.AddAsync(message);
-            await _context.SaveChangesAsync();
+                var chat = await _context.Chats
+                    .Include(c => c.Users)
+                    .FirstOrDefaultAsync(c => c.Id == sendMessageDto.ChatId);
 
-            // Update cache
-            var cacheKey = $"chat:{sendMessageDto.ChatId}";
-            var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
-            
-            if (cachedChat != null)
-            {
-                var messageDto = _mapper.Map<ChatMessageDto>(message);
-                cachedChat.Messages.Add(messageDto);
-                await _cacheService.SetAsync(cacheKey, cachedChat, TimeSpan.FromHours(1));
+                if (chat == null)
+                    return NotFound(new { Message = "Chat not found" });
+
+                if (!chat.Users.Any(u => u.Id == userId))
+                    return BadRequest(new { Message = "Sender is not in this chat" });
+
+                var message = new Message
+                {
+                    ChatId = sendMessageDto.ChatId,
+                    SenderId = userId,
+                    Content = sendMessageDto.Content,
+                    SentAt = DateTime.UtcNow
+                };
+
+                await _context.Messages.AddAsync(message);
+                await _context.SaveChangesAsync();
+
+                // Update total message count
+                TotalMessages.WithLabels(chat.IsGroupChat ? "group" : "private").Inc();
+
+                // Update cache
+                var cacheKey = $"chat:{sendMessageDto.ChatId}";
+                var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
+                
+                if (cachedChat != null)
+                {
+                    var messageDto = _mapper.Map<ChatMessageDto>(message);
+                    cachedChat.Messages.Add(messageDto);
+                    await _cacheService.SetAsync(cacheKey, cachedChat, TimeSpan.FromHours(1));
+                }
+
+                // Send message to users in chat
+                var chatUsers = chat.Users.Select(u => u.Id.ToString()).ToList();
+                await _hubContext.Clients.Users(chatUsers).SendAsync("ReceiveMessage", message);
+
+                return Ok(message);
             }
-
-            // Send message to users in chat
-            var chatUsers = chat.Users.Select(u => u.Id.ToString()).ToList();
-            await _hubContext.Clients.Users(chatUsers).SendAsync("ReceiveMessage", message);
-
-            return Ok(message);
         }
     }
 }
