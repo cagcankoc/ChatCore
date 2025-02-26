@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: 'https://localhost:7114/api',
+  baseURL: 'http://localhost:5114/api',
 })
 
 // Request interceptor ekle

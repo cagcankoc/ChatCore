@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # SQL Server
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: chatcore-sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=${DB_PASSWORD}
+      - MSSQL_PID=Express
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - chatcore-network
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -C -S ${DB_HOST} -U ${DB_USER} -P "${DB_PASSWORD}" -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Backend API
+  webapi:
+    build:
+      context: ./Server/ChatCore.WebApi
+      dockerfile: Dockerfile
+    container_name: chatcore-webapi
+    ports:
+      - "5114:5114"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_URLS=http://+:5114
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__SqlServer=Server=${DB_HOST};Database=${DB_NAME};User Id=${DB_USER};Password=${DB_PASSWORD};TrustServerCertificate=True
+      - JwtSettings__SecretKey=${JWT_SECRET_KEY}
+    networks:
+      - chatcore-network
+    restart: unless-stopped
+
+  # Frontend
+  client:
+    build:
+      context: ./Client/chatcore
+      dockerfile: Dockerfile
+    container_name: chatcore-client
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:5114
+    depends_on:
+      - webapi
+    networks:
+      - chatcore-network
+    restart: unless-stopped
+
+networks:
+  chatcore-network:
+    driver: bridge
+
+volumes:
+  sqlserver_data: 

@@ -26,7 +26,7 @@ class SignalRService {
       const token = localStorage.getItem('token')
       
       this.connection = new HubConnectionBuilder()
-        .withUrl('https://localhost:7114/chathub', {
+        .withUrl('http://localhost:5114/chathub', {
           accessTokenFactory: () => token || ''
         })
         .withAutomaticReconnect()
