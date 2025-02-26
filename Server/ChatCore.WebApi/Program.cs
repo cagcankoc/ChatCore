@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Reflection;
 using System.Text;
+using StackExchange.Redis;
+using ChatCore.WebApi.Interfaces.Services;
+using ChatCore.WebApi.Services.Cache;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -68,6 +71,14 @@ builder.Services
 
 // Authorization
 builder.Services.AddAuthorization();
+
+// Redis Configuration
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+{
+    var options = ConfigurationOptions.Parse(builder.Configuration.GetConnectionString("Redis")!);
+    return ConnectionMultiplexer.Connect(options);
+});
+builder.Services.AddSingleton<ICacheService, RedisCacheService>();
 
 builder.Services.AddControllers();
 builder.Services.AddSignalR();

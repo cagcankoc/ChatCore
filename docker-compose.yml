@@ -22,6 +22,22 @@ services:
       retries: 5
       start_period: 30s
 
+  # Redis
+  redis:
+    image: redis:alpine
+    container_name: chatcore-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chatcore-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Backend API
   webapi:
     build:
@@ -33,11 +49,14 @@ services:
     depends_on:
       sqlserver:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - ASPNETCORE_URLS=http://+:5114
       - ASPNETCORE_ENVIRONMENT=Development
       - ConnectionStrings__SqlServer=Server=${DB_HOST};Database=${DB_NAME};User Id=${DB_USER};Password=${DB_PASSWORD};TrustServerCertificate=True
       - JwtSettings__SecretKey=${JWT_SECRET_KEY}
+      - ConnectionStrings__Redis=redis:6379
     networks:
       - chatcore-network
     restart: unless-stopped
@@ -63,4 +82,5 @@ networks:
     driver: bridge
 
 volumes:
-  sqlserver_data: 
+  sqlserver_data:
+  redis_data: 
