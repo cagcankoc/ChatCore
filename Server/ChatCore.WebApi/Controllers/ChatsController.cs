@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using ChatCore.WebApi.Interfaces.Services;
 
 namespace ChatCore.WebApi.Controllers
 {
@@ -20,12 +21,18 @@ namespace ChatCore.WebApi.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IMapper _mapper;
         private readonly IHubContext<ChatHub> _hubContext;
+        private readonly ICacheService _cacheService;
 
-        public ChatsController(ApplicationDbContext context, IMapper mapper, IHubContext<ChatHub> hubContext)
+        public ChatsController(
+            ApplicationDbContext context,
+            IMapper mapper,
+            IHubContext<ChatHub> hubContext,
+            ICacheService cacheService)
         {
             _context = context;
             _mapper = mapper;
             _hubContext = hubContext;
+            _cacheService = cacheService;
         }
 
         [HttpGet("UserChats")]
@@ -49,6 +56,19 @@ namespace ChatCore.WebApi.Controllers
             var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                 ?? throw new UnauthorizedAccessException("User ID not found in token"));
 
+            // Check cache
+            var cacheKey = $"chat:{id}";
+            var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
+
+            if (cachedChat != null)
+            {
+                if (!cachedChat.Users.Any(u => u.Id == userId))
+                    return Unauthorized(new { Message = "You are not a member of this chat" });
+
+                return Ok(cachedChat);
+            }
+
+            // If not in cache, get from database
             var chat = await _context.Chats
                 .Include(c => c.Users)
                 .Include(c => c.Messages)
@@ -59,7 +79,12 @@ namespace ChatCore.WebApi.Controllers
             else if (!chat.Users.Any(u => u.Id == userId))
                 return Unauthorized(new { Message = "You are not a member of this chat" });
 
-            return Ok(_mapper.Map<GetChatDto>(chat));
+            var chatDto = _mapper.Map<GetChatDto>(chat);
+
+            // Save to cache (1 hour)
+            await _cacheService.SetAsync(cacheKey, chatDto, TimeSpan.FromHours(1));
+
+            return Ok(chatDto);
         }
 
         [HttpPost]
@@ -140,6 +165,17 @@ namespace ChatCore.WebApi.Controllers
 
             await _context.Messages.AddAsync(message);
             await _context.SaveChangesAsync();
+
+            // Update cache
+            var cacheKey = $"chat:{sendMessageDto.ChatId}";
+            var cachedChat = await _cacheService.GetAsync<GetChatDto>(cacheKey);
+            
+            if (cachedChat != null)
+            {
+                var messageDto = _mapper.Map<ChatMessageDto>(message);
+                cachedChat.Messages.Add(messageDto);
+                await _cacheService.SetAsync(cacheKey, cachedChat, TimeSpan.FromHours(1));
+            }
 
             // Send message to users in chat
             var chatUsers = chat.Users.Select(u => u.Id.ToString()).ToList();
