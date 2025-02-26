@@ -77,10 +77,43 @@ services:
       - chatcore-network
     restart: unless-stopped
 
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: chatcore-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - chatcore-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: chatcore-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - chatcore-network
+    depends_on:
+      - prometheus
+
 networks:
   chatcore-network:
     driver: bridge
 
 volumes:
   sqlserver_data:
-  redis_data: 
+  redis_data:
+  prometheus_data:
+  grafana_data: 

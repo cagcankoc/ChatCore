@@ -8,6 +8,9 @@ using System.Text;
 using StackExchange.Redis;
 using ChatCore.WebApi.Interfaces.Services;
 using ChatCore.WebApi.Services.Cache;
+using Prometheus;
+using HealthChecks.UI.Client;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -80,6 +83,11 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 });
 builder.Services.AddSingleton<ICacheService, RedisCacheService>();
 
+// Health Checks
+builder.Services.AddHealthChecks()
+    .AddSqlServer(builder.Configuration.GetConnectionString("SqlServer")!)
+    .AddRedis(builder.Configuration.GetConnectionString("Redis")!);
+
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
 builder.Services.AddEndpointsApiExplorer();
@@ -94,6 +102,16 @@ using (var scope = app.Services.CreateScope())
     var context = services.GetRequiredService<ApplicationDbContext>();
     context.Database.EnsureCreated();
 }
+
+// Prometheus metrics
+app.UseMetricServer();
+app.UseHttpMetrics();
+
+// Health check endpoint
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
+});
 
 if (app.Environment.IsDevelopment())
 {
