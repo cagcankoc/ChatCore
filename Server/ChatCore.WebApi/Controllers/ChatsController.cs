@@ -46,6 +46,9 @@ namespace ChatCore.WebApi.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<Chat>> GetChat(Guid id)
         {
+            var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? throw new UnauthorizedAccessException("User ID not found in token"));
+
             var chat = await _context.Chats
                 .Include(c => c.Users)
                 .Include(c => c.Messages)
@@ -53,6 +56,8 @@ namespace ChatCore.WebApi.Controllers
 
             if (chat == null)
                 return NotFound();
+            else if (!chat.Users.Any(u => u.Id == userId))
+                return Unauthorized(new { Message = "You are not a member of this chat" });
 
             return Ok(_mapper.Map<GetChatDto>(chat));
         }
