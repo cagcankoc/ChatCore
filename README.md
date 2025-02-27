@@ -147,3 +147,12 @@ ChatCore/
         ├── Dockerfile                   # Frontend Docker config
         └── nginx.conf                   # Nginx configuration
 ```
+
+## Images
+
+![](images/login.png)
+![](images/private-chat.png)
+![](images/create-group-chat.png)
+![](images/group-chat.png)
+![](images/prometheus.png)
+![](images/grafana.png)
